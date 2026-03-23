@@ -14,6 +14,7 @@ import (
 	"github.com/amigoer/weclaw-proxy/internal/adapter"
 	"github.com/amigoer/weclaw-proxy/internal/config"
 	"github.com/amigoer/weclaw-proxy/internal/router"
+	"github.com/amigoer/weclaw-proxy/internal/server"
 	"github.com/amigoer/weclaw-proxy/internal/session"
 	"github.com/amigoer/weclaw-proxy/internal/weixin"
 )
@@ -73,6 +74,7 @@ func main() {
 	}
 
 	// 尝试加载已有 Token
+	weixinConnected := false
 	if !loadSavedToken(cfg, wxClient, logger) {
 		logger.Info("未找到已保存的 Token，开始登录流程")
 		if err := doLogin(cfg, wxClient, logger); err != nil {
@@ -80,6 +82,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	weixinConnected = true
 
 	// 创建会话管理器
 	sessionMgr := session.NewManager(&cfg.Session, logger.With("module", "session"))
@@ -90,6 +93,36 @@ func main() {
 
 	// 创建消息发送器
 	sender := weixin.NewSender(wxClient, logger.With("module", "sender"))
+
+	// 创建管理后台服务
+	store := server.NewStore(fmt.Sprintf("%s/runtime.json", cfg.Weixin.DataDir), logger.With("module", "store"))
+	// 从当前配置初始化 store
+	for _, a := range cfg.Adapters {
+		store.AddAdapter(a)
+	}
+	store.SetRouting(cfg.Routing)
+
+	adminServer := server.NewServer(store, sessionMgr, logger.With("module", "admin"))
+	adminServer.MountFrontend(server.FrontendDist, "dist")
+
+	// 设置状态回调
+	accountID := loadAccountID(cfg)
+	adminServer.SetStatusFunc(func() server.StatusInfo {
+		return server.StatusInfo{
+			WeixinConnected: weixinConnected,
+			AccountID:       accountID,
+			AdapterCount:    len(store.ListAdapters()),
+			ActiveSessions:  sessionMgr.SessionCount(),
+		}
+	})
+
+	// 启动 HTTP 管理服务器（后台）
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	go func() {
+		if err := adminServer.ListenAndServe(addr); err != nil {
+			logger.Error("管理服务器异常", "error", err)
+		}
+	}()
 
 	// 设置 context，支持优雅关闭
 	ctx, cancel := context.WithCancel(context.Background())
@@ -105,7 +138,6 @@ func main() {
 	}()
 
 	// 启动消息轮询
-	accountID := loadAccountID(cfg)
 	poller := weixin.NewPoller(wxClient,
 		weixin.WithPollerAccountID(accountID),
 		weixin.WithPollerLogger(logger.With("module", "poller")),
@@ -121,6 +153,7 @@ func main() {
 	logger.Info("🚀 WeClaw-Proxy 已启动",
 		"accountID", accountID,
 		"adapters", msgRouter.ListAdapters(),
+		"adminPanel", "http://"+addr,
 	)
 
 	if err := poller.Start(ctx); err != nil && ctx.Err() == nil {
