@@ -68,13 +68,12 @@ jobs:
           fi
           OUTPUT="weclaw-proxy-${{ matrix.os }}-${{ matrix.arch }}${EXT}"
           go build -ldflags="-s -w -X main.version=${VERSION}" -o "${OUTPUT}" ./cmd/weclaw-proxy/
-          echo "ARTIFACT=${OUTPUT}" >> $GITHUB_ENV
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: weclaw-proxy-${{ matrix.os }}-${{ matrix.arch }}
-          path: ${{ env.ARTIFACT }}
+          path: weclaw-proxy-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.os == 'windows' && '.exe' || '' }}
 
   # 构建并推送 Docker 多架构镜像
   build-docker:
