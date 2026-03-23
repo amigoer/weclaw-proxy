@@ -1,0 +1,11 @@
+.git
+.github
+.weclaw-data
+.vscode
+.idea
+*.md
+Makefile
+weclaw-proxy
+web/node_modules
+web/dist
+internal/server/dist

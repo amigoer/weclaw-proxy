@@ -10,9 +10,8 @@ go.work
 
 # 前端依赖与产物
 web/node_modules/
-web/dist/
+**/dist/
 web/.npm/
-internal/server/dist/
 
 # 日志文件
 *.log
