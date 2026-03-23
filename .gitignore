@@ -1,0 +1,19 @@
+# 编译产物
+/weclaw-proxy
+*.exe
+
+# 数据目录
+.weclaw-data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 配置文件（防止泄露密钥）
+configs/config.yaml
+
+# 系统文件
+.DS_Store
+Thumbs.db

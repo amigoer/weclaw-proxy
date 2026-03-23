@@ -1,0 +1,48 @@
+# WeClaw-Proxy 示例配置文件
+# 复制此文件为 config.yaml 并根据需要修改
+
+server:
+  port: 8080
+
+# 微信连接配置
+weixin:
+  base_url: "https://ilinkai.weixin.qq.com"
+  cdn_base_url: "https://novac2c.cdn.weixin.qq.com/c2c"
+  long_poll_timeout_ms: 35000
+  data_dir: ".weclaw-data"
+
+# Agent 适配器配置
+adapters:
+  # OpenAI 兼容适配器（支持 OpenAI、vLLM、Ollama 等）
+  - name: "openai-gpt4"
+    type: "openai"
+    api_key: "${OPENAI_API_KEY}"
+    base_url: "https://api.openai.com/v1"
+    model: "gpt-4o"
+    system_prompt: "你是一个友好的微信助手，请用简洁的中文回答问题。"
+    max_tokens: 4096
+    temperature: 0.7
+
+  # 通用 Webhook 适配器（可接入任何自定义 Agent）
+  # - name: "custom-webhook"
+  #   type: "webhook"
+  #   base_url: "https://my-agent.example.com/chat"
+  #   api_key: "your-webhook-api-key"
+
+# 消息路由规则
+routing:
+  default_adapter: "openai-gpt4"
+  rules: []
+    # 按前缀路由示例：
+    # - match:
+    #     prefix: "/claude"
+    #   adapter: "claude"
+    # 按用户 ID 路由示例：
+    # - match:
+    #     user_ids: ["user123@im.wechat"]
+    #   adapter: "custom-webhook"
+
+# 会话管理
+session:
+  history_limit: 20       # 保留最近 N 条对话历史
+  timeout_minutes: 30     # 会话超时时间（分钟）
