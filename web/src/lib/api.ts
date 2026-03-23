@@ -51,3 +51,25 @@ export async function updateRoutes(data: Record<string, unknown>) {
   })
   return res.json()
 }
+
+// 退出微信登录
+export async function logout() {
+  const res = await fetch(`${API_BASE}/api/logout`, {
+    method: 'POST',
+  })
+  return res.json()
+}
+
+// 获取登录二维码
+export async function startLogin() {
+  const res = await fetch(`${API_BASE}/api/login/qrcode`, {
+    method: 'POST',
+  })
+  return res.json()
+}
+
+// 获取登录状态
+export async function getLoginStatus() {
+  const res = await fetch(`${API_BASE}/api/login/status`)
+  return res.json()
+}

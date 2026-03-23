@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 
+	qrterminal "github.com/mdp/qrterminal/v3"
+
 	"github.com/amigoer/weclaw-proxy/internal/adapter"
 	"github.com/amigoer/weclaw-proxy/internal/config"
 	"github.com/amigoer/weclaw-proxy/internal/router"
@@ -75,14 +77,9 @@ func main() {
 
 	// 尝试加载已有 Token
 	weixinConnected := false
-	if !loadSavedToken(cfg, wxClient, logger) {
-		logger.Info("未找到已保存的 Token，开始登录流程")
-		if err := doLogin(cfg, wxClient, logger); err != nil {
-			logger.Error("登录失败", "error", err)
-			os.Exit(1)
-		}
+	if loadSavedToken(cfg, wxClient, logger) {
+		weixinConnected = true
 	}
-	weixinConnected = true
 
 	// 创建会话管理器
 	sessionMgr := session.NewManager(&cfg.Session, logger.With("module", "session"))
@@ -104,9 +101,40 @@ func main() {
 
 	adminServer := server.NewServer(store, sessionMgr, logger.With("module", "admin"))
 	adminServer.MountFrontend(server.FrontendDist, "dist")
+	accountID := loadAccountID(cfg)
+
+	// 设置认证客户端（Web 登录用）
+	authClient := weixin.NewAuthClient(cfg.Weixin.BaseURL, logger.With("module", "auth"))
+	adminServer.SetAuthClient(authClient)
+
+	// 设置 context，支持优雅关闭
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// 设置 Web 登录成功回调
+	adminServer.SetLoginCallback(func(result *weixin.LoginResult) error {
+		wxClient.SetToken(result.BotToken)
+		if result.BaseURL != "" {
+			wxClient.SetBaseURL(result.BaseURL)
+		}
+		weixinConnected = true
+		accountID = weixin.NormalizeAccountID(result.AccountID)
+
+		// 持久化 Token
+		accountData := weixin.AccountData{
+			Token:   result.BotToken,
+			BaseURL: result.BaseURL,
+			UserID:  result.UserID,
+		}
+		saveAccountData(cfg, accountID, &accountData, logger)
+		logger.Info("Web 登录成功", "accountID", accountID)
+
+		// 启动消息轮询
+		go startPoller(ctx, cfg, wxClient, sender, msgRouter, sessionMgr, accountID, logger)
+		return nil
+	})
 
 	// 设置状态回调
-	accountID := loadAccountID(cfg)
 	adminServer.SetStatusFunc(func() server.StatusInfo {
 		return server.StatusInfo{
 			WeixinConnected: weixinConnected,
@@ -114,6 +142,17 @@ func main() {
 			AdapterCount:    len(store.ListAdapters()),
 			ActiveSessions:  sessionMgr.SessionCount(),
 		}
+	})
+
+	// 设置退出登录回调
+	adminServer.SetLogoutFunc(func() error {
+		tokenFile := fmt.Sprintf("%s/token.json", cfg.Weixin.DataDir)
+		_ = os.Remove(tokenFile)
+		accountFile := fmt.Sprintf("%s/account.txt", cfg.Weixin.DataDir)
+		_ = os.Remove(accountFile)
+		weixinConnected = false
+		logger.Info("已清除 Token 文件")
+		return nil
 	})
 
 	// 启动 HTTP 管理服务器（后台）
@@ -124,10 +163,6 @@ func main() {
 		}
 	}()
 
-	// 设置 context，支持优雅关闭
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	// 监听系统信号
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -137,7 +172,61 @@ func main() {
 		cancel()
 	}()
 
-	// 启动消息轮询
+	// 如果已登录，启动消息轮询
+	if weixinConnected {
+		logger.Info("🚀 WeClaw-Proxy 已启动",
+			"accountID", accountID,
+			"adapters", msgRouter.ListAdapters(),
+			"adminPanel", "http://"+addr,
+		)
+		startPoller(ctx, cfg, wxClient, sender, msgRouter, sessionMgr, accountID, logger)
+	} else {
+		displayAddr := addr
+		if strings.HasPrefix(displayAddr, ":") {
+			displayAddr = "localhost" + displayAddr
+		}
+		logger.Info("⏳ 等待登录，CLI 扫码或访问管理面板均可",
+			"adminPanel", "http://"+displayAddr,
+		)
+
+		// 后台 CLI 登录（非阻塞），登录成功后自动启动 poller
+		go func() {
+			if err := doLogin(cfg, wxClient, logger); err != nil {
+				// 登录失败或被取消，忽略（用户可能从 Web 登录）
+				if ctx.Err() == nil {
+					logger.Debug("CLI 登录未完成", "error", err)
+				}
+				return
+			}
+			// CLI 登录成功
+			if !weixinConnected {
+				weixinConnected = true
+				accountID = loadAccountID(cfg)
+				logger.Info("🚀 CLI 登录成功，WeClaw-Proxy 已启动", "accountID", accountID)
+				go startPoller(ctx, cfg, wxClient, sender, msgRouter, sessionMgr, accountID, logger)
+			}
+		}()
+
+		fmt.Printf("\n🌐 也可以访问 http://%s 在 Web 管理面板扫码登录\n\n", displayAddr)
+
+		// 等待信号退出
+		<-ctx.Done()
+	}
+
+	logger.Info("WeClaw-Proxy 已停止")
+}
+
+// startPoller 启动消息轮询
+func startPoller(
+	ctx context.Context,
+	cfg *config.Config,
+	wxClient *weixin.Client,
+	sender *weixin.Sender,
+	msgRouter *router.Router,
+	sessionMgr *session.Manager,
+	accountID string,
+	logger *slog.Logger,
+) {
 	poller := weixin.NewPoller(wxClient,
 		weixin.WithPollerAccountID(accountID),
 		weixin.WithPollerLogger(logger.With("module", "poller")),
@@ -150,18 +239,11 @@ func main() {
 		weixin.WithInitialSyncBuf(loadSyncBuf(cfg, accountID, logger)),
 	)
 
-	logger.Info("🚀 WeClaw-Proxy 已启动",
-		"accountID", accountID,
-		"adapters", msgRouter.ListAdapters(),
-		"adminPanel", "http://"+addr,
-	)
+	logger.Info("消息轮询启动中", "accountID", accountID)
 
 	if err := poller.Start(ctx); err != nil && ctx.Err() == nil {
 		logger.Error("轮询异常退出", "error", err)
-		os.Exit(1)
 	}
-
-	logger.Info("WeClaw-Proxy 已停止")
 }
 
 // handleMessage 处理收到的微信消息
@@ -367,7 +449,8 @@ func doLogin(cfg *config.Config, client *weixin.Client, logger *slog.Logger) err
 	result, err := authClient.Login(context.Background(),
 		func(qr *weixin.QRCodeInfo) {
 			fmt.Println("\n📱 请使用微信扫描以下二维码：")
-			fmt.Printf("🔗 %s\n\n", qr.QRCodeURL)
+			qrterminal.GenerateHalfBlock(qr.QRCodeURL, qrterminal.L, os.Stdout)
+			fmt.Printf("\n🔗 %s\n\n", qr.QRCodeURL)
 		},
 		func(msg string) {
 			fmt.Println(msg)

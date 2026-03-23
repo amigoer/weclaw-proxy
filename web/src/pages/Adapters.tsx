@@ -156,12 +156,12 @@ export function AdaptersPage({ onUpdate }: Props) {
                   <SelectTrigger className="col-span-3">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="w-80">
                     {ADAPTER_TYPES.map(t => (
                       <SelectItem key={t.value} value={t.value}>
-                        <div>
-                          <span>{t.label}</span>
-                          <span className="text-muted-foreground text-xs ml-2">{t.desc}</span>
+                        <div className="flex flex-col">
+                          <span className="font-medium">{t.label}</span>
+                          <span className="text-muted-foreground text-xs">{t.desc}</span>
                         </div>
                       </SelectItem>
                     ))}

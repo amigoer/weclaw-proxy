@@ -61,6 +61,11 @@ func NewAuthClient(baseURL string, logger *slog.Logger) *AuthClient {
 	}
 }
 
+// GetBaseURL 返回认证服务的基础 URL
+func (a *AuthClient) GetBaseURL() string {
+	return a.baseURL
+}
+
 // FetchQRCode 获取登录二维码
 func (a *AuthClient) FetchQRCode(ctx context.Context, botType string) (*QRCodeInfo, error) {
 	if botType == "" {
