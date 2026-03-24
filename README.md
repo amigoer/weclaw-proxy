@@ -4,7 +4,7 @@
 
 ## ✨ 特性
 
-- 🔌 **多 Agent 接入** — 支持 OpenAI、DeepSeek、Ollama、Dify、Coze、自定义 Webhook
+- 🔌 **多 Agent 接入** — 支持 OpenAI、DeepSeek、Ollama、Dify、Coze、Webhook、**本地 CLI**（Codex / Claude Code / Gemini CLI）
 - 🧠 **智能路由** — LLM 驱动的消息自动分类，也支持前缀 `/command` 手动路由
 - 🖥️ **Web 管理面板** — 全功能可视化配置，所有改动实时同步到 YAML
 - 📱 **扫码登录** — 网页端扫码，一步绑定微信
@@ -91,6 +91,35 @@ smart_routing:
 ```
 
 > 💡 所有配置都可以在 Web 管理面板中在线编辑，无需手动修改 YAML 文件。
+
+### CLI Agent 配置
+
+支持直接调用本地安装的 AI CLI 工具，自动推断子命令参数：
+
+```yaml
+adapters:
+  - name: "codex"
+    type: cli
+    base_url: "codex"       # 命令路径
+    extra:
+      timeout: "120"        # 超时（秒），默认 120
+      # args: "exec"        # 可选，留空自动推断
+      # work_dir: "/project" # 可选，工作目录
+
+  - name: "claude"
+    type: cli
+    base_url: "claude"      # claude -p "消息"
+
+  - name: "gemini"
+    type: cli
+    base_url: "gemini"      # gemini -p "消息"
+```
+
+| CLI 工具 | 命令 | 自动推断参数 |
+|----------|------|:------------:|
+| Codex    | `codex` | `exec` |
+| Claude Code | `claude` | `-p` |
+| Gemini CLI | `gemini` | `-p` |
 
 ## 📦 支持的平台
 
