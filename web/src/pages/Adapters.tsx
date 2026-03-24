@@ -21,6 +21,7 @@ interface AdapterConfig {
   system_prompt?: string
   max_tokens?: number
   temperature?: number
+  extra?: Record<string, string>
 }
 
 // 支持的适配器类型
@@ -29,6 +30,7 @@ const ADAPTER_TYPES = [
   { value: 'webhook', label: 'Webhook', desc: '转发到自定义 HTTP 端点（对接任意 Agent）' },
   { value: 'dify', label: 'Dify', desc: 'Dify Agent / 工作流' },
   { value: 'coze', label: 'Coze', desc: 'Coze Bot 平台' },
+  { value: 'cli', label: 'CLI Agent', desc: '本地 CLI 工具（Codex、Claude Code、Gemini CLI）' },
 ]
 
 // 类型颜色映射
@@ -37,6 +39,7 @@ const TYPE_COLORS: Record<string, 'default' | 'secondary' | 'outline'> = {
   webhook: 'secondary',
   dify: 'outline',
   coze: 'outline',
+  cli: 'secondary',
 }
 
 interface Props {
@@ -108,15 +111,19 @@ export function AdaptersPage({ onUpdate }: Props) {
   const handleSave = async () => {
     if (!form.name.trim()) return
 
-    if (editingAdapter) {
-      await updateAdapter(editingAdapter.name, form as unknown as Record<string, unknown>)
-    } else {
-      await createAdapter(form as unknown as Record<string, unknown>)
-    }
+    try {
+      if (editingAdapter) {
+        await updateAdapter(editingAdapter.name, form as unknown as Record<string, unknown>)
+      } else {
+        await createAdapter(form as unknown as Record<string, unknown>)
+      }
 
-    setDialogOpen(false)
-    await loadAdapters()
-    onUpdate()
+      setDialogOpen(false)
+      await loadAdapters()
+      onUpdate()
+    } catch (err) {
+      console.error('保存适配器失败:', err)
+    }
   }
 
   return (
@@ -155,7 +162,7 @@ export function AdaptersPage({ onUpdate }: Props) {
 
               <div className="grid grid-cols-4 items-center gap-4">
                 <Label className="text-right">类型</Label>
-                <Select value={form.type} onValueChange={(v) => { if (v) setForm({ ...form, type: v }) }}>
+                <Select value={form.type} onValueChange={(v: string | null) => { if (v) setForm({ ...form, type: v }) }}>
                   <SelectTrigger className="col-span-3">
                     <SelectValue />
                   </SelectTrigger>
@@ -172,28 +179,78 @@ export function AdaptersPage({ onUpdate }: Props) {
                 </Select>
               </div>
 
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="adapter-url" className="text-right">API 地址</Label>
-                <Input
-                  id="adapter-url"
-                  value={form.base_url}
-                  onChange={e => setForm({ ...form, base_url: e.target.value })}
-                  className="col-span-3"
-                  placeholder={form.type === 'openai' ? 'https://api.openai.com/v1' : 'https://your-agent.com/chat'}
-                />
-              </div>
+              {form.type === 'cli' ? (
+                <>
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="adapter-cmd" className="text-right">命令路径</Label>
+                    <Input
+                      id="adapter-cmd"
+                      value={form.base_url}
+                      onChange={e => setForm({ ...form, base_url: e.target.value })}
+                      className="col-span-3"
+                      placeholder="codex / claude / gemini"
+                    />
+                  </div>
 
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="adapter-key" className="text-right">API Key</Label>
-                <Input
-                  id="adapter-key"
-                  type="password"
-                  value={form.api_key}
-                  onChange={e => setForm({ ...form, api_key: e.target.value })}
-                  className="col-span-3"
-                  placeholder="sk-..."
-                />
-              </div>
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="adapter-args" className="text-right">子命令参数</Label>
+                    <Input
+                      id="adapter-args"
+                      value={form.extra?.args || ''}
+                      onChange={e => setForm({ ...form, extra: { ...form.extra, args: e.target.value } })}
+                      className="col-span-3"
+                      placeholder="自动推断（codex→exec, claude→-p）"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="adapter-timeout" className="text-right">超时(秒)</Label>
+                    <Input
+                      id="adapter-timeout"
+                      value={form.extra?.timeout || ''}
+                      onChange={e => setForm({ ...form, extra: { ...form.extra, timeout: e.target.value } })}
+                      className="col-span-3"
+                      placeholder="120"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="adapter-workdir" className="text-right">工作目录</Label>
+                    <Input
+                      id="adapter-workdir"
+                      value={form.extra?.work_dir || ''}
+                      onChange={e => setForm({ ...form, extra: { ...form.extra, work_dir: e.target.value } })}
+                      className="col-span-3"
+                      placeholder="可选，CLI 执行时的工作目录"
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="adapter-url" className="text-right">API 地址</Label>
+                    <Input
+                      id="adapter-url"
+                      value={form.base_url}
+                      onChange={e => setForm({ ...form, base_url: e.target.value })}
+                      className="col-span-3"
+                      placeholder={form.type === 'openai' ? 'https://api.openai.com/v1' : 'https://your-agent.com/chat'}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="adapter-key" className="text-right">API Key</Label>
+                    <Input
+                      id="adapter-key"
+                      type="password"
+                      value={form.api_key}
+                      onChange={e => setForm({ ...form, api_key: e.target.value })}
+                      className="col-span-3"
+                      placeholder="sk-..."
+                    />
+                  </div>
+                </>
+              )}
 
               {form.type === 'openai' && (
                 <>
@@ -277,7 +334,7 @@ export function AdaptersPage({ onUpdate }: Props) {
       </CardContent>
 
       {/* 删除确认弹窗 */}
-      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}>
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open: boolean) => { if (!open) setDeleteTarget(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>确认删除</AlertDialogTitle>

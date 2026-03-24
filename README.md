@@ -13,12 +13,12 @@
 
 ## 📸 截图
 
-| 面板总览 | 添加 Agent |
-|:---:|:---:|
+|                  面板总览                   |              添加 Agent               |
+| :-----------------------------------------: | :-----------------------------------: |
 | ![dashboard](docs/screenshot-dashboard.png) | ![agents](docs/screenshot-agents.png) |
 
-| 路由规则 | 扫码登录 |
-|:---:|:---:|
+|                路由规则                 |              扫码登录               |
+| :-------------------------------------: | :---------------------------------: |
 | ![routing](docs/screenshot-routing.png) | ![login](docs/screenshot-login.png) |
 
 ## 🚀 快速开始
@@ -94,12 +94,12 @@ smart_routing:
 
 ## 📦 支持的平台
 
-| 平台 | AMD64 | ARM64 |
-|------|:-----:|:-----:|
-| Linux | ✅ | ✅ |
-| macOS | ✅ | ✅ |
-| Windows | ✅ | ✅ |
-| Docker | ✅ | ✅ |
+| 平台    | AMD64 | ARM64 |
+| ------- | :---: | :---: |
+| Linux   |   ✅   |   ✅   |
+| macOS   |   ✅   |   ✅   |
+| Windows |   ✅   |   ✅   |
+| Docker  |   ✅   |   ✅   |
 
 ## 🔗 友情链接
 

@@ -403,6 +403,8 @@ func registerAdapters(cfg *config.Config, r *router.Router, logger *slog.Logger)
 			a = adapter.NewOpenAIAdapter(&acfgCopy, adapterLogger)
 		case "webhook":
 			a = adapter.NewWebhookAdapter(&acfgCopy, adapterLogger)
+		case "cli":
+			a = adapter.NewCLIAdapter(&acfgCopy, adapterLogger)
 		default:
 			logger.Warn("暂不支持的适配器类型，跳过",
 				"name", acfg.Name,
