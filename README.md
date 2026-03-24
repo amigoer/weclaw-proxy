@@ -101,6 +101,10 @@ smart_routing:
 | Windows | ✅ | ✅ |
 | Docker | ✅ | ✅ |
 
+## 🔗 友情链接
+
+- [Linux.do](https://linux.do) — 开源技术社区
+
 ## 📄 License
 
 MIT
