@@ -17,25 +17,34 @@ import (
 	"github.com/amigoer/weclaw-proxy/internal/weixin"
 )
 
+// AccountInfo 单个微信账号信息
+type AccountInfo struct {
+	AccountID string `json:"account_id"`
+	Nickname  string `json:"nickname,omitempty"`
+	Connected bool   `json:"connected"`
+}
+
 // StatusInfo 系统状态信息
 type StatusInfo struct {
-	WeixinConnected     bool   `json:"weixin_connected"`
-	AccountID           string `json:"account_id"`
-	AdapterCount        int    `json:"adapter_count"`
-	ActiveSessions      int    `json:"active_sessions"`
-	SmartRoutingEnabled bool   `json:"smart_routing_enabled"`
-	Uptime              string `json:"uptime"`
+	WeixinConnected     bool          `json:"weixin_connected"`
+	AccountID           string        `json:"account_id"`
+	Accounts            []AccountInfo `json:"accounts,omitempty"`
+	AdapterCount        int           `json:"adapter_count"`
+	ActiveSessions      int           `json:"active_sessions"`
+	SmartRoutingEnabled bool          `json:"smart_routing_enabled"`
+	Uptime              string        `json:"uptime"`
 }
 
 // loginState Web 登录状态
 type loginState struct {
-	mu       sync.Mutex
-	active   bool   // 是否有正在进行的登录
-	qrURL    string // 二维码 URL
-	qrCode   string // 二维码值（用于轮询）
-	status   string // wait / scaned / confirmed / expired / error
-	message  string // 状态消息
-	cancel   context.CancelFunc
+	mu        sync.Mutex
+	active    bool   // 是否有正在进行的登录
+	status    string // wait / scaned / confirmed / expired / error
+	message   string // 状态消息
+	accountID string // confirmed 后保存的账号 ID
+	qrURL     string // 二维码 URL
+	qrCode    string // 二维码值（用于轮询）
+	cancel    context.CancelFunc
 }
 
 // LoginSuccessCallback 登录成功回调
@@ -43,15 +52,17 @@ type LoginSuccessCallback func(result *weixin.LoginResult) error
 
 // Server Web 管理服务器
 type Server struct {
-	store      *Store
-	sessionMgr *session.Manager
-	statusFn   func() StatusInfo
-	logoutFn   func() error
-	loginCb    LoginSuccessCallback // 登录成功回调
-	authClient *weixin.AuthClient   // 认证客户端
-	login      loginState           // 登录状态
-	logger     *slog.Logger
-	mux        *http.ServeMux
+	store           *Store
+	sessionMgr      *session.Manager
+	statusFn        func() StatusInfo
+	logoutFn        func() error                     // 退出所有账号（向后兼容）
+	logoutAccountFn func(accountID string) error      // 退出指定账号
+	renameAccountFn func(accountID, nickname string) error // 修改账号备注
+	loginCb         LoginSuccessCallback              // 登录成功回调
+	authClient      *weixin.AuthClient                // 认证客户端
+	login           loginState                        // 登录状态
+	logger          *slog.Logger
+	mux             *http.ServeMux
 }
 
 // NewServer 创建管理服务器
@@ -79,6 +90,16 @@ func (s *Server) SetLogoutFunc(fn func() error) {
 	s.logoutFn = fn
 }
 
+// SetLogoutAccountFunc 设置按账号退出回调
+func (s *Server) SetLogoutAccountFunc(fn func(accountID string) error) {
+	s.logoutAccountFn = fn
+}
+
+// SetRenameAccountFunc 设置修改账号备注回调
+func (s *Server) SetRenameAccountFunc(fn func(accountID, nickname string) error) {
+	s.renameAccountFn = fn
+}
+
 // SetLoginCallback 设置登录成功回调
 func (s *Server) SetLoginCallback(cb LoginSuccessCallback) {
 	s.loginCb = cb
@@ -104,6 +125,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/routes", s.cors(s.handleRoutes))
 	s.mux.HandleFunc("/api/smart-routing", s.cors(s.handleSmartRouting))
 	s.mux.HandleFunc("/api/logout", s.cors(s.handleLogout))
+	s.mux.HandleFunc("/api/accounts/", s.cors(s.handleAccountByID))
 	s.mux.HandleFunc("/api/login/qrcode", s.cors(s.handleLoginQRCode))
 	s.mux.HandleFunc("/api/login/status", s.cors(s.handleLoginStatus))
 
@@ -252,6 +274,17 @@ func (s *Server) handleAdapterByName(w http.ResponseWriter, r *http.Request) {
 		if !s.store.DeleteAdapter(name) {
 			s.jsonErr(w, "不存在", http.StatusNotFound)
 			return
+		}
+		// 级联清理：如果删除的是默认适配器，自动清除引用
+		routing := s.store.GetRouting()
+		if routing.DefaultAdapter == name {
+			routing.DefaultAdapter = ""
+			// 自动回落到第一个可用适配器
+			if adapters := s.store.ListAdapters(); len(adapters) > 0 {
+				routing.DefaultAdapter = adapters[0].Name
+			}
+			s.store.SetRouting(routing)
+			s.logger.Info("默认适配器已自动调整", "newDefault", routing.DefaultAdapter)
 		}
 		_ = s.store.Save()
 		_ = s.store.SaveToYAML()
@@ -481,6 +514,7 @@ func (s *Server) pollLoginStatus(ctx context.Context, qrCode string) {
 		case "confirmed":
 			s.login.status = "confirmed"
 			s.login.message = "登录成功！"
+			s.login.accountID = weixin.NormalizeAccountID(statusResp.ILinkBotID)
 			s.login.mu.Unlock()
 
 			// 调用登录成功回调
@@ -518,10 +552,11 @@ func (s *Server) handleLoginStatus(w http.ResponseWriter, r *http.Request) {
 	defer s.login.mu.Unlock()
 
 	s.json(w, map[string]interface{}{
-		"active":  s.login.active,
-		"status":  s.login.status,
-		"message": s.login.message,
-		"qr_url":  s.login.qrURL,
+		"active":     s.login.active,
+		"status":     s.login.status,
+		"message":    s.login.message,
+		"qr_url":     s.login.qrURL,
+		"account_id": s.login.accountID,
 	})
 }
 
@@ -540,6 +575,51 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logger.Info("已退出微信登录")
 	s.json(w, map[string]string{"status": "ok", "message": "已退出登录，请重新扫码"})
+}
+
+// handleAccountByID 按 accountID 操作账号
+func (s *Server) handleAccountByID(w http.ResponseWriter, r *http.Request) {
+	accountID := strings.TrimPrefix(r.URL.Path, "/api/accounts/")
+	if accountID == "" {
+		s.jsonErr(w, "缺少 account_id", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPut:
+		// 修改账号备注
+		var body struct {
+			Nickname string `json:"nickname"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			s.jsonErr(w, "无效的请求体", http.StatusBadRequest)
+			return
+		}
+		if s.renameAccountFn == nil {
+			s.jsonErr(w, "备注功能未配置", http.StatusInternalServerError)
+			return
+		}
+		if err := s.renameAccountFn(accountID, body.Nickname); err != nil {
+			s.jsonErr(w, "修改备注失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.json(w, map[string]string{"status": "ok", "nickname": body.Nickname})
+
+	case http.MethodDelete:
+		if s.logoutAccountFn == nil {
+			s.jsonErr(w, "退出功能未配置", http.StatusInternalServerError)
+			return
+		}
+		if err := s.logoutAccountFn(accountID); err != nil {
+			s.jsonErr(w, "退出失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.logger.Info("已退出指定微信账号", "accountID", accountID)
+		s.json(w, map[string]string{"status": "ok", "account_id": accountID})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // ListenAndServe 启动服务器

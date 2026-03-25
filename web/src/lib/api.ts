@@ -75,6 +75,24 @@ export async function logout() {
   return res.json()
 }
 
+// 退出指定微信账号
+export async function logoutAccount(accountID: string) {
+  const res = await fetch(`${API_BASE}/api/accounts/${encodeURIComponent(accountID)}`, {
+    method: 'DELETE',
+  })
+  return res.json()
+}
+
+// 修改微信账号备注
+export async function renameAccount(accountID: string, nickname: string) {
+  const res = await fetch(`${API_BASE}/api/accounts/${encodeURIComponent(accountID)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nickname }),
+  })
+  return res.json()
+}
+
 // 获取登录二维码
 export async function startLogin() {
   const res = await fetch(`${API_BASE}/api/login/qrcode`, {

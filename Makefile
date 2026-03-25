@@ -1,4 +1,4 @@
-.PHONY: all build web clean dev dev-web login help
+.PHONY: all build web clean dev dev-web login lint test help
 
 # 默认目标：构建前端 + Go 二进制
 all: build
@@ -33,6 +33,27 @@ lint:
 	go vet ./...
 	cd web && npx tsc --noEmit
 
+# 预发布测试：编译 + Docker 构建，模拟 CI 全流程
+test: clean
+	@echo "🧪 [1/4] 前端编译..."
+	cd web && npm install --silent && npm run build
+	@echo "✅ 前端编译通过"
+	@echo ""
+	@echo "🧪 [2/4] Go 编译 + 代码检查..."
+	go vet ./...
+	CGO_ENABLED=0 go build -o weclaw-proxy ./cmd/weclaw-proxy/
+	@echo "✅ Go 编译通过"
+	@echo ""
+	@echo "🧪 [3/4] TypeScript 类型检查..."
+	cd web && npx tsc --noEmit
+	@echo "✅ TypeScript 类型检查通过"
+	@echo ""
+	@echo "🧪 [4/4] Docker 构建..."
+	docker build --build-arg VERSION=test -t weclaw-proxy:test .
+	@echo "✅ Docker 构建通过"
+	@echo ""
+	@echo "🎉 全部测试通过！可以放心 push。"
+
 # 清理构建产物
 clean:
 	rm -f weclaw-proxy
@@ -49,4 +70,5 @@ help:
 	@echo "  make dev-web  - 启动前端热更新服务器"
 	@echo "  make login    - 微信扫码登录"
 	@echo "  make lint     - 代码检查"
+	@echo "  make test     - 预发布测试（编译 + Docker）"
 	@echo "  make clean    - 清理构建产物"

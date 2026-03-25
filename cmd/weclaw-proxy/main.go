@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	qrterminal "github.com/mdp/qrterminal/v3"
@@ -26,6 +28,66 @@ var (
 	loginOnly  = flag.Bool("login", false, "仅执行微信登录，不启动服务")
 	verbose    = flag.Bool("verbose", false, "启用详细日志")
 )
+
+// accountSession 单个微信账号的运行时状态
+type accountSession struct {
+	accountID  string
+	nickname   string
+	client     *weixin.Client
+	sender     *weixin.Sender
+	sessionMgr *session.Manager
+	cancel     context.CancelFunc
+}
+
+// accountManager 多账号管理器
+type accountManager struct {
+	mu       sync.RWMutex
+	sessions map[string]*accountSession
+}
+
+func newAccountManager() *accountManager {
+	return &accountManager{
+		sessions: make(map[string]*accountSession),
+	}
+}
+
+func (m *accountManager) add(s *accountSession) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessions[s.accountID] = s
+}
+
+func (m *accountManager) remove(accountID string) *accountSession {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[accountID]
+	if ok {
+		delete(m.sessions, accountID)
+	}
+	return s
+}
+
+func (m *accountManager) get(accountID string) *accountSession {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.sessions[accountID]
+}
+
+func (m *accountManager) list() []*accountSession {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]*accountSession, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		result = append(result, s)
+	}
+	return result
+}
+
+func (m *accountManager) count() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.sessions)
+}
 
 func main() {
 	flag.Parse()
@@ -58,16 +120,14 @@ func main() {
 		"routingRules", len(cfg.Routing.Rules),
 	)
 
-	// 创建微信客户端
-	wxClient := weixin.NewClient(
-		weixin.WithBaseURL(cfg.Weixin.BaseURL),
-		weixin.WithCDNBaseURL(cfg.Weixin.CDNBaseURL),
-		weixin.WithLongPollTimeout(cfg.Weixin.LongPollTimeoutMs),
-		weixin.WithLogger(logger.With("module", "weixin")),
-	)
-
 	// 仅登录模式
 	if *loginOnly {
+		wxClient := weixin.NewClient(
+			weixin.WithBaseURL(cfg.Weixin.BaseURL),
+			weixin.WithCDNBaseURL(cfg.Weixin.CDNBaseURL),
+			weixin.WithLongPollTimeout(cfg.Weixin.LongPollTimeoutMs),
+			weixin.WithLogger(logger.With("module", "weixin")),
+		)
 		if err := doLogin(cfg, wxClient, logger); err != nil {
 			logger.Error("登录失败", "error", err)
 			os.Exit(1)
@@ -75,16 +135,10 @@ func main() {
 		return
 	}
 
-	// 尝试加载已有 Token
-	weixinConnected := false
-	if loadSavedToken(cfg, wxClient, logger) {
-		weixinConnected = true
-	}
+	// 创建多账号管理器
+	mgr := newAccountManager()
 
-	// 创建会话管理器
-	sessionMgr := session.NewManager(&cfg.Session, logger.With("module", "session"))
-
-	// 创建路由器并注册适配器
+	// 创建路由器并注册适配器（所有账号共享）
 	msgRouter := router.NewRouter(&cfg.Routing, logger.With("module", "router"))
 	registerAdapters(cfg, msgRouter, logger)
 
@@ -94,22 +148,19 @@ func main() {
 		msgRouter.SetSmartRouter(smartRouter)
 	}
 
-	// 创建消息发送器
-	sender := weixin.NewSender(wxClient, logger.With("module", "sender"))
-
 	// 创建管理后台服务
 	store := server.NewStore(fmt.Sprintf("%s/runtime.json", cfg.Weixin.DataDir), logger.With("module", "store"))
 	store.SetConfigFilePath(*configPath)
-	// 从当前配置初始化 store
 	for _, a := range cfg.Adapters {
 		store.AddAdapter(a)
 	}
 	store.SetRouting(cfg.Routing)
 	store.SetSmartRouting(cfg.SmartRouting)
 
-	adminServer := server.NewServer(store, sessionMgr, logger.With("module", "admin"))
+	// 创建共享会话管理器（用于 StatusInfo 统计）
+	globalSessionMgr := session.NewManager(&cfg.Session, logger.With("module", "session"))
+	adminServer := server.NewServer(store, globalSessionMgr, logger.With("module", "admin"))
 	adminServer.MountFrontend(server.FrontendDist, "dist")
-	accountID := loadAccountID(cfg)
 
 	// 设置认证客户端（Web 登录用）
 	authClient := weixin.NewAuthClient(cfg.Weixin.BaseURL, logger.With("module", "auth"))
@@ -121,12 +172,32 @@ func main() {
 
 	// 设置 Web 登录成功回调
 	adminServer.SetLoginCallback(func(result *weixin.LoginResult) error {
-		wxClient.SetToken(result.BotToken)
+		accountID := weixin.NormalizeAccountID(result.AccountID)
+
+		// 创建新账号的微信客户端
+		newClient := weixin.NewClient(
+			weixin.WithBaseURL(cfg.Weixin.BaseURL),
+			weixin.WithCDNBaseURL(cfg.Weixin.CDNBaseURL),
+			weixin.WithLongPollTimeout(cfg.Weixin.LongPollTimeoutMs),
+			weixin.WithLogger(logger.With("module", "weixin", "account", accountID)),
+		)
+		newClient.SetToken(result.BotToken)
 		if result.BaseURL != "" {
-			wxClient.SetBaseURL(result.BaseURL)
+			newClient.SetBaseURL(result.BaseURL)
 		}
-		weixinConnected = true
-		accountID = weixin.NormalizeAccountID(result.AccountID)
+
+		newSender := weixin.NewSender(newClient, logger.With("module", "sender", "account", accountID))
+		newSessionMgr := session.NewManager(&cfg.Session, logger.With("module", "session", "account", accountID))
+
+		sessCtx, sessCancel := context.WithCancel(ctx)
+		sess := &accountSession{
+			accountID:  accountID,
+			client:     newClient,
+			sender:     newSender,
+			sessionMgr: newSessionMgr,
+			cancel:     sessCancel,
+		}
+		mgr.add(sess)
 
 		// 持久化 Token
 		accountData := weixin.AccountData{
@@ -135,32 +206,83 @@ func main() {
 			UserID:  result.UserID,
 		}
 		saveAccountData(cfg, accountID, &accountData, logger)
-		logger.Info("Web 登录成功", "accountID", accountID)
+		logger.Info("Web 登录成功", "accountID", accountID, "totalAccounts", mgr.count())
 
 		// 启动消息轮询
-		go startPoller(ctx, cfg, wxClient, sender, msgRouter, sessionMgr, accountID, logger)
+		go startPoller(sessCtx, cfg, newClient, newSender, msgRouter, newSessionMgr, accountID, logger)
 		return nil
 	})
 
 	// 设置状态回调
 	adminServer.SetStatusFunc(func() server.StatusInfo {
+		accounts := mgr.list()
+		accountInfos := make([]server.AccountInfo, 0, len(accounts))
+		for _, s := range accounts {
+			accountInfos = append(accountInfos, server.AccountInfo{
+				AccountID: s.accountID,
+				Nickname:  s.nickname,
+				Connected: true,
+			})
+		}
+
+		// 向后兼容：单账号时填充老字段
+		connected := len(accounts) > 0
+		firstID := ""
+		if connected {
+			firstID = accounts[0].accountID
+		}
+
 		return server.StatusInfo{
-			WeixinConnected:     weixinConnected,
-			AccountID:           accountID,
+			WeixinConnected:     connected,
+			AccountID:           firstID,
+			Accounts:            accountInfos,
 			AdapterCount:        len(store.ListAdapters()),
-			ActiveSessions:      sessionMgr.SessionCount(),
+			ActiveSessions:      globalSessionMgr.SessionCount(),
 			SmartRoutingEnabled: msgRouter.SmartRouterEnabled(),
 		}
 	})
 
-	// 设置退出登录回调
+	// 设置退出登录回调（退出所有账号）
 	adminServer.SetLogoutFunc(func() error {
-		tokenFile := fmt.Sprintf("%s/token.json", cfg.Weixin.DataDir)
-		_ = os.Remove(tokenFile)
-		accountFile := fmt.Sprintf("%s/account.txt", cfg.Weixin.DataDir)
-		_ = os.Remove(accountFile)
-		weixinConnected = false
-		logger.Info("已清除 Token 文件")
+		for _, s := range mgr.list() {
+			if s.cancel != nil {
+				s.cancel()
+			}
+			removeAccountData(cfg, s.accountID, logger)
+			mgr.remove(s.accountID)
+		}
+		logger.Info("已退出所有微信账号")
+		return nil
+	})
+
+	// 设置按账号退出回调
+	adminServer.SetLogoutAccountFunc(func(accountID string) error {
+		s := mgr.remove(accountID)
+		if s == nil {
+			return fmt.Errorf("账号不存在: %s", accountID)
+		}
+		if s.cancel != nil {
+			s.cancel()
+		}
+		removeAccountData(cfg, accountID, logger)
+		logger.Info("已退出微信账号", "accountID", accountID, "remaining", mgr.count())
+		return nil
+	})
+
+	// 设置修改账号备注回调
+	adminServer.SetRenameAccountFunc(func(accountID, nickname string) error {
+		s := mgr.get(accountID)
+		if s == nil {
+			return fmt.Errorf("账号不存在: %s", accountID)
+		}
+		s.nickname = nickname
+		// 持久化备注
+		accountData := loadAccountData(cfg, accountID)
+		if accountData != nil {
+			accountData.Nickname = nickname
+			saveAccountData(cfg, accountID, accountData, logger)
+		}
+		logger.Info("已修改账号备注", "accountID", accountID, "nickname", nickname)
 		return nil
 	})
 
@@ -181,14 +303,15 @@ func main() {
 		cancel()
 	}()
 
-	// 如果已登录，启动消息轮询
-	if weixinConnected {
+	// 尝试从持久化数据恢复已登录账号
+	restoredAccounts := restoreAccounts(ctx, cfg, mgr, msgRouter, logger)
+
+	if restoredAccounts > 0 {
 		logger.Info("🚀 WeClaw-Proxy 已启动",
-			"accountID", accountID,
+			"accounts", restoredAccounts,
 			"adapters", msgRouter.ListAdapters(),
 			"adminPanel", "http://"+addr,
 		)
-		startPoller(ctx, cfg, wxClient, sender, msgRouter, sessionMgr, accountID, logger)
 	} else {
 		displayAddr := addr
 		if strings.HasPrefix(displayAddr, ":") {
@@ -197,31 +320,11 @@ func main() {
 		logger.Info("⏳ 等待登录，CLI 扫码或访问管理面板均可",
 			"adminPanel", "http://"+displayAddr,
 		)
-
-		// 后台 CLI 登录（非阻塞），登录成功后自动启动 poller
-		go func() {
-			if err := doLogin(cfg, wxClient, logger); err != nil {
-				// 登录失败或被取消，忽略（用户可能从 Web 登录）
-				if ctx.Err() == nil {
-					logger.Debug("CLI 登录未完成", "error", err)
-				}
-				return
-			}
-			// CLI 登录成功
-			if !weixinConnected {
-				weixinConnected = true
-				accountID = loadAccountID(cfg)
-				logger.Info("🚀 CLI 登录成功，WeClaw-Proxy 已启动", "accountID", accountID)
-				go startPoller(ctx, cfg, wxClient, sender, msgRouter, sessionMgr, accountID, logger)
-			}
-		}()
-
-		fmt.Printf("\n🌐 也可以访问 http://%s 在 Web 管理面板扫码登录\n\n", displayAddr)
-
-		// 等待信号退出
-		<-ctx.Done()
+		fmt.Printf("\n🌐 访问 http://%s 在 Web 管理面板扫码登录\n\n", displayAddr)
 	}
 
+	// 等待信号退出
+	<-ctx.Done()
 	logger.Info("WeClaw-Proxy 已停止")
 }
 
@@ -493,14 +596,27 @@ func doLogin(cfg *config.Config, client *weixin.Client, logger *slog.Logger) err
 	return nil
 }
 
+func loadAccountData(cfg *config.Config, accountID string) *weixin.AccountData {
+	tokenFile := filepath.Join(cfg.Weixin.DataDir, "accounts", accountID, "token.json")
+	data, err := os.ReadFile(tokenFile)
+	if err != nil {
+		return nil
+	}
+	var accountData weixin.AccountData
+	if err := json.Unmarshal(data, &accountData); err != nil {
+		return nil
+	}
+	return &accountData
+}
+
 func saveAccountData(cfg *config.Config, accountID string, data *weixin.AccountData, logger *slog.Logger) {
-	dir := cfg.Weixin.DataDir
+	dir := filepath.Join(cfg.Weixin.DataDir, "accounts", accountID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		logger.Error("创建数据目录失败", "error", err)
+		logger.Error("创建账号数据目录失败", "error", err)
 		return
 	}
 
-	tokenFile := fmt.Sprintf("%s/token.json", dir)
+	tokenFile := filepath.Join(dir, "token.json")
 	jsonData, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		logger.Error("序列化 Token 数据失败", "error", err)
@@ -509,9 +625,135 @@ func saveAccountData(cfg *config.Config, accountID string, data *weixin.AccountD
 	if err := os.WriteFile(tokenFile, jsonData, 0600); err != nil {
 		logger.Error("保存 Token 失败", "error", err)
 	}
+}
 
-	accountFile := fmt.Sprintf("%s/account.txt", dir)
-	_ = os.WriteFile(accountFile, []byte(accountID), 0600)
+func removeAccountData(cfg *config.Config, accountID string, logger *slog.Logger) {
+	dir := filepath.Join(cfg.Weixin.DataDir, "accounts", accountID)
+	if err := os.RemoveAll(dir); err != nil {
+		logger.Error("删除账号数据失败", "accountID", accountID, "error", err)
+	}
+	// 兼容旧版单账号文件
+	_ = os.Remove(filepath.Join(cfg.Weixin.DataDir, "token.json"))
+	_ = os.Remove(filepath.Join(cfg.Weixin.DataDir, "account.txt"))
+}
+
+// restoreAccounts 从持久化数据恢复所有已登录账号
+func restoreAccounts(
+	ctx context.Context,
+	cfg *config.Config,
+	mgr *accountManager,
+	msgRouter *router.Router,
+	logger *slog.Logger,
+) int {
+	restored := 0
+
+	// 扫描 accounts 子目录
+	accountsDir := filepath.Join(cfg.Weixin.DataDir, "accounts")
+	entries, err := os.ReadDir(accountsDir)
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			accountID := entry.Name()
+			if restoreOneAccount(ctx, cfg, mgr, msgRouter, accountID, logger) {
+				restored++
+			}
+		}
+	}
+
+	// 兼容旧版单账号 token.json
+	if restored == 0 {
+		oldTokenFile := filepath.Join(cfg.Weixin.DataDir, "token.json")
+		if data, err := os.ReadFile(oldTokenFile); err == nil {
+			var accountData weixin.AccountData
+			if json.Unmarshal(data, &accountData) == nil && accountData.Token != "" {
+				accountID := loadAccountID(cfg)
+				client := weixin.NewClient(
+					weixin.WithBaseURL(cfg.Weixin.BaseURL),
+					weixin.WithCDNBaseURL(cfg.Weixin.CDNBaseURL),
+					weixin.WithLongPollTimeout(cfg.Weixin.LongPollTimeoutMs),
+					weixin.WithLogger(logger.With("module", "weixin", "account", accountID)),
+				)
+				client.SetToken(accountData.Token)
+				if accountData.BaseURL != "" {
+					client.SetBaseURL(accountData.BaseURL)
+				}
+
+				sender := weixin.NewSender(client, logger.With("module", "sender", "account", accountID))
+				sessionMgr := session.NewManager(&cfg.Session, logger.With("module", "session", "account", accountID))
+
+				sessCtx, sessCancel := context.WithCancel(ctx)
+				sess := &accountSession{
+					accountID:  accountID,
+					client:     client,
+					sender:     sender,
+					sessionMgr: sessionMgr,
+					cancel:     sessCancel,
+				}
+				mgr.add(sess)
+
+				// 迁移到新目录结构
+				saveAccountData(cfg, accountID, &accountData, logger)
+
+				go startPoller(sessCtx, cfg, client, sender, msgRouter, sessionMgr, accountID, logger)
+				logger.Info("已恢复账号（旧版迁移）", "accountID", accountID)
+				restored++
+			}
+		}
+	}
+
+	return restored
+}
+
+// restoreOneAccount 恢复单个账号
+func restoreOneAccount(
+	ctx context.Context,
+	cfg *config.Config,
+	mgr *accountManager,
+	msgRouter *router.Router,
+	accountID string,
+	logger *slog.Logger,
+) bool {
+	tokenFile := filepath.Join(cfg.Weixin.DataDir, "accounts", accountID, "token.json")
+	data, err := os.ReadFile(tokenFile)
+	if err != nil {
+		return false
+	}
+
+	var accountData weixin.AccountData
+	if err := json.Unmarshal(data, &accountData); err != nil || accountData.Token == "" {
+		return false
+	}
+
+	client := weixin.NewClient(
+		weixin.WithBaseURL(cfg.Weixin.BaseURL),
+		weixin.WithCDNBaseURL(cfg.Weixin.CDNBaseURL),
+		weixin.WithLongPollTimeout(cfg.Weixin.LongPollTimeoutMs),
+		weixin.WithLogger(logger.With("module", "weixin", "account", accountID)),
+	)
+	client.SetToken(accountData.Token)
+	if accountData.BaseURL != "" {
+		client.SetBaseURL(accountData.BaseURL)
+	}
+
+	sender := weixin.NewSender(client, logger.With("module", "sender", "account", accountID))
+	sessionMgr := session.NewManager(&cfg.Session, logger.With("module", "session", "account", accountID))
+
+	sessCtx, sessCancel := context.WithCancel(ctx)
+	sess := &accountSession{
+		accountID:  accountID,
+		nickname:   accountData.Nickname,
+		client:     client,
+		sender:     sender,
+		sessionMgr: sessionMgr,
+		cancel:     sessCancel,
+	}
+	mgr.add(sess)
+
+	go startPoller(sessCtx, cfg, client, sender, msgRouter, sessionMgr, accountID, logger)
+	logger.Info("已恢复账号", "accountID", accountID)
+	return true
 }
 
 func loadAccountID(cfg *config.Config) string {

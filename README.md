@@ -1,72 +1,75 @@
 # WeClaw-Proxy
 
-> 微信开放平台 AI Agent 代理适配器 —— 让任意 AI Agent 一键对接微信
+> WeChat Open-Platform AI Agent Proxy — Connect any AI Agent to WeChat in one step
 
-## ✨ 特性
+[中文文档](README_zh.md)
 
-- 🔌 **多 Agent 接入** — 支持 OpenAI、DeepSeek、Ollama、Dify、Coze、Webhook、**本地 CLI**（Codex / Claude Code / Gemini CLI）
-- 🧠 **智能路由** — LLM 驱动的消息自动分类，也支持前缀 `/command` 手动路由
-- 🖥️ **Web 管理面板** — 全功能可视化配置，所有改动实时同步到 YAML
-- 📱 **扫码登录** — 网页端扫码，一步绑定微信
-- 💬 **会话管理** — 自动维护上下文和对话历史
-- 🐳 **跨平台部署** — 二进制 / Docker 一键启动，支持 Linux / macOS / Windows
+## ✨ Features
 
-## 📸 截图
+- 🔌 **Multi-Agent Support** — OpenAI, DeepSeek, Ollama, Dify, Coze, Webhook, and **Local CLI** (Codex / Claude Code / Gemini CLI)
+- 📱 **Multi-Account WeChat** — Bind and manage multiple WeChat accounts simultaneously
+- 🧠 **Smart Routing** — LLM-powered automatic message classification, plus manual `/command` prefix routing
+- 🖥️ **Web Admin Panel** — Full-featured visual configuration with real-time YAML sync
+- 📷 **QR Code Login** — Scan to bind, with guided nickname setup on success
+- 💬 **Session Management** — Automatic context and conversation history
+- 🐳 **Cross-Platform** — Binary / Docker one-click deploy on Linux / macOS / Windows
 
-|                  面板总览                   |              添加 Agent               |
-| :-----------------------------------------: | :-----------------------------------: |
-| ![dashboard](docs/screenshot-dashboard.png) | ![agents](docs/screenshot-agents.png) |
+## 📸 Screenshots
 
-|                路由规则                 |              扫码登录               |
-| :-------------------------------------: | :---------------------------------: |
-| ![routing](docs/screenshot-routing.png) | ![login](docs/screenshot-login.png) |
+| Dashboard Overview | Add Agent |
+| :---: | :---: |
+| ![dashboard](docs/screenshot-dashboard.png) | ![add-agent](docs/screenshot-addagent.png) |
 
-## 🚀 快速开始
+| QR Code Login | Binding Success |
+| :---: | :---: |
+| ![login](docs/screenshot-login.png) | ![binding](docs/screenshot-bindingsuccess.png) |
 
-### Docker（推荐）
+| Routing Rules | Multi-Account Management |
+| :---: | :---: |
+| ![routing](docs/screenshot-routing.png) | ![accounts](docs/screenshot-accounts.png) |
+
+## 🚀 Quick Start
+
+### Docker (Recommended)
 
 ```bash
-# 1. 创建配置文件
+# 1. Create config file
 curl -o config.yaml https://raw.githubusercontent.com/amigoer/weclaw-proxy/main/configs/config.example.yaml
-# 编辑 config.yaml，填入你的 Agent API Key
+# Edit config.yaml with your Agent API Key
 
-# 2. 启动
+# 2. Start
 docker run -d \
   --name weclaw-proxy \
   -v ./config.yaml:/data/config.yaml \
   -p 8080:8080 \
   ghcr.io/amigoer/weclaw-proxy:latest
 
-# 3. 打开 http://localhost:8080 扫码登录微信
+# 3. Open http://localhost:8080 to scan QR code and log in
 ```
 
-### 二进制部署
+### Binary
 
-从 [Releases](https://github.com/amigoer/weclaw-proxy/releases) 下载对应平台的二进制文件：
+Download from [Releases](https://github.com/amigoer/weclaw-proxy/releases):
 
 ```bash
-# 下载并运行
 chmod +x weclaw-proxy-linux-amd64
 ./weclaw-proxy-linux-amd64 --config config.yaml
 ```
 
-### 从源码构建
+### Build from Source
 
 ```bash
 git clone https://github.com/amigoer/weclaw-proxy.git
 cd weclaw-proxy
-make        # 构建前端 + Go 二进制
-make dev    # 开发模式运行
+make        # Build frontend + Go binary
+make dev    # Run in development mode
 ```
 
-## ⚙️ 配置示例
+## ⚙️ Configuration
 
 ```yaml
 server:
   port: 8080
-
-weixin:
-  app_id: "your-app-id"
 
 adapters:
   - name: "openai-gpt4"
@@ -74,7 +77,7 @@ adapters:
     api_key: "sk-xxx"
     base_url: "https://api.openai.com/v1"
     model: "gpt-4o"
-    system_prompt: "你是一个友好的微信助手"
+    system_prompt: "You are a friendly WeChat assistant"
 
 routing:
   default_adapter: "openai-gpt4"
@@ -83,56 +86,56 @@ routing:
         prefix: "/claude"
       adapter: "claude"
 
-# 智能路由（可选）
+# Smart Routing (optional)
 smart_routing:
   enabled: false
   api_key: "sk-xxx"
   model: "gpt-4o-mini"
 ```
 
-> 💡 所有配置都可以在 Web 管理面板中在线编辑，无需手动修改 YAML 文件。
+> 💡 All configuration can be edited live in the Web Admin Panel — no need to manually modify YAML files.
 
-### CLI Agent 配置
+### CLI Agent
 
-支持直接调用本地安装的 AI CLI 工具，自动推断子命令参数：
+Directly invoke locally installed AI CLI tools with automatic sub-command inference:
 
 ```yaml
 adapters:
   - name: "codex"
     type: cli
-    base_url: "codex"       # 命令路径
+    base_url: "codex"       # Command path
     extra:
-      timeout: "120"        # 超时（秒），默认 120
-      # args: "exec"        # 可选，留空自动推断
-      # work_dir: "/project" # 可选，工作目录
+      timeout: "120"        # Timeout in seconds, default 120
+      # args: "exec"        # Optional, auto-inferred
+      # work_dir: "/project" # Optional, working directory
 
   - name: "claude"
     type: cli
-    base_url: "claude"      # claude -p "消息"
+    base_url: "claude"      # claude -p "message"
 
   - name: "gemini"
     type: cli
-    base_url: "gemini"      # gemini -p "消息"
+    base_url: "gemini"      # gemini -p "message"
 ```
 
-| CLI 工具 | 命令 | 自动推断参数 |
-|----------|------|:------------:|
-| Codex    | `codex` | `exec` |
+| CLI Tool | Command | Auto-Inferred Args |
+|----------|---------|:------------------:|
+| Codex | `codex` | `exec` |
 | Claude Code | `claude` | `-p` |
 | Gemini CLI | `gemini` | `-p` |
 
-## 📦 支持的平台
+## 📦 Supported Platforms
 
-| 平台    | AMD64 | ARM64 |
-| ------- | :---: | :---: |
-| Linux   |   ✅   |   ✅   |
-| macOS   |   ✅   |   ✅   |
-| Windows |   ✅   |   ✅   |
-| Docker  |   ✅   |   ✅   |
+| Platform | AMD64 | ARM64 |
+| -------- | :---: | :---: |
+| Linux    |   ✅   |   ✅   |
+| macOS    |   ✅   |   ✅   |
+| Windows  |   ✅   |   ✅   |
+| Docker   |   ✅   |   ✅   |
 
-## 🔗 友情链接
+## 🔗 Links
 
-- [Linux.do](https://linux.do) — 开源技术社区
+- [Linux.do](https://linux.do) — Open Source Tech Community
 
 ## 📄 License
 

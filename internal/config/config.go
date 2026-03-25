@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -99,29 +100,44 @@ func (c *Config) Validate() error {
 
 		validTypes := map[string]bool{
 			"openai": true, "anthropic": true, "dify": true,
-			"coze": true, "webhook": true,
+			"coze": true, "webhook": true, "cli": true,
 		}
 		if !validTypes[a.AdapterType] {
 			return fmt.Errorf("不支持的适配器类型: %s（支持: %s）",
 				a.AdapterType,
-				strings.Join([]string{"openai", "anthropic", "dify", "coze", "webhook"}, ", "),
+				strings.Join([]string{"openai", "anthropic", "dify", "coze", "webhook", "cli"}, ", "),
 			)
 		}
 	}
 
-	// 验证默认适配器存在
+	// 验证默认适配器存在（自动修复无效引用）
 	if c.Routing.DefaultAdapter != "" {
 		if !adapterNames[c.Routing.DefaultAdapter] {
-			return fmt.Errorf("默认适配器 '%s' 不在已配置的适配器列表中", c.Routing.DefaultAdapter)
+			// 自动回落到第一个可用适配器，而非拒绝启动
+			oldDefault := c.Routing.DefaultAdapter
+			c.Routing.DefaultAdapter = ""
+			if len(c.Adapters) > 0 {
+				c.Routing.DefaultAdapter = c.Adapters[0].Name
+			}
+			slog.Warn("默认适配器不存在，已自动调整",
+				"old", oldDefault,
+				"new", c.Routing.DefaultAdapter,
+			)
 		}
 	}
 
-	// 验证路由规则引用的适配器存在
-	for i, rule := range c.Routing.Rules {
-		if !adapterNames[rule.AdapterName] {
-			return fmt.Errorf("路由规则 #%d 引用的适配器 '%s' 不存在", i+1, rule.AdapterName)
+	// 验证路由规则引用的适配器存在（过滤无效规则）
+	validRules := make([]router.RouteRule, 0, len(c.Routing.Rules))
+	for _, rule := range c.Routing.Rules {
+		if adapterNames[rule.AdapterName] {
+			validRules = append(validRules, rule)
+		} else {
+			slog.Warn("路由规则引用的适配器不存在，已跳过",
+				"adapter", rule.AdapterName,
+			)
 		}
 	}
+	c.Routing.Rules = validRules
 
 	return nil
 }

@@ -4,6 +4,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
@@ -11,16 +13,22 @@ import {
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-  AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { AdaptersPage } from './pages/Adapters'
 import { RoutesPage } from './pages/Routes'
-import { fetchStatus, logout, startLogin, getLoginStatus } from './lib/api'
+import { fetchStatus, logoutAccount, renameAccount, startLogin, getLoginStatus } from './lib/api'
 
 // 系统状态类型
+interface AccountInfo {
+  account_id: string
+  nickname?: string
+  connected: boolean
+}
+
 interface StatusInfo {
   weixin_connected: boolean
   account_id: string
+  accounts?: AccountInfo[]
   adapter_count: number
   active_sessions: number
   smart_routing_enabled: boolean
@@ -36,6 +44,15 @@ export default function App() {
   const [loginMessage, setLoginMessage] = useState('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const autoLoginTriggered = useRef(false)
+
+  // 登录成功后的绑定信息
+  const [confirmedAccountId, setConfirmedAccountId] = useState('')
+  const [loginNickname, setLoginNickname] = useState('')
+
+  // 账号备注弹窗状态
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renameTarget, setRenameTarget] = useState('')
+  const [renameValue, setRenameValue] = useState('')
 
   const loadStatus = useCallback(async () => {
     try {
@@ -96,12 +113,11 @@ export default function App() {
             setLoginMessage('已扫码，请在微信中确认...')
             break
           case 'confirmed':
-            setLoginMessage('✅ 登录成功！')
+            setLoginMessage('✅ 绑定成功！')
+            setConfirmedAccountId(res.account_id || '')
+            setLoginNickname('')
             stopPolling()
-            setTimeout(() => {
-              setLoginDialogOpen(false)
-              loadStatus()
-            }, 1500)
+            loadStatus()
             break
           case 'expired':
             setLoginMessage('二维码已过期，正在刷新...')
@@ -129,12 +145,52 @@ export default function App() {
   // Dialog 关闭时停止轮询
   const handleLoginDialogChange = (open: boolean) => {
     setLoginDialogOpen(open)
-    if (!open) stopPolling()
+    if (!open) {
+      stopPolling()
+      setConfirmedAccountId('')
+      setLoginNickname('')
+    }
   }
 
-  const handleLogout = async () => {
-    await logout()
+  // 登录成功后完成操作（保存备注并关闭）
+  const handleLoginDone = async () => {
+    if (loginNickname.trim() && confirmedAccountId) {
+      await renameAccount(confirmedAccountId, loginNickname.trim())
+    }
+    setLoginDialogOpen(false)
+    setConfirmedAccountId('')
+    setLoginNickname('')
     loadStatus()
+  }
+
+  const handleLogoutAccount = async (accountID: string) => {
+    await logoutAccount(accountID)
+    setLogoutTarget('')
+    loadStatus()
+  }
+
+  // 退出确认弹窗状态
+  const [logoutTarget, setLogoutTarget] = useState('')
+
+  const handleRenameAccount = (accountID: string, currentName?: string) => {
+    setRenameTarget(accountID)
+    setRenameValue(currentName || '')
+    setRenameOpen(true)
+  }
+
+  const handleRenameSave = async () => {
+    await renameAccount(renameTarget, renameValue)
+    setRenameOpen(false)
+    loadStatus()
+  }
+
+  const accounts = status?.accounts || []
+
+  // 显示账号名称（优先备注，其次截短 ID）
+  const displayName = (a: AccountInfo) => {
+    if (a.nickname) return a.nickname
+    const id = a.account_id
+    return id.length > 12 ? id.slice(0, 8) + '...' : id
   }
 
   return (
@@ -162,41 +218,46 @@ export default function App() {
               </svg>
             </a>
             {status && (
-              <Badge
-                variant={status.weixin_connected ? 'default' : 'destructive'}
-                className={status.weixin_connected ? 'bg-green-600 hover:bg-green-700' : ''}
-              >
-                {status.weixin_connected ? '微信已连接' : '微信未连接'}
-              </Badge>
+              <div className="relative group">
+                <Badge
+                  variant={status.weixin_connected ? 'default' : 'destructive'}
+                  className={`cursor-default ${status.weixin_connected ? 'bg-green-600 hover:bg-green-700' : ''}`}
+                >
+                  {status.weixin_connected
+                    ? `微信已连接${accounts.length > 1 ? ` (${accounts.length})` : ''}`
+                    : '微信未连接'}
+                </Badge>
+                {/* Hover 下拉卡片 */}
+                {accounts.length > 0 && (
+                  <div className="absolute right-0 top-full mt-2 w-64 bg-card border border-border rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50">
+                    <div className="p-3 border-b border-border">
+                      <p className="text-xs text-muted-foreground">已连接账号 ({accounts.length})</p>
+                    </div>
+                    <div className="p-2 space-y-1">
+                      {accounts.map(a => (
+                        <div key={a.account_id} className="flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-muted/50 transition-colors">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />
+                            <span className="text-sm truncate max-w-[140px]" title={a.account_id}>{displayName(a)}</span>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive hover:text-destructive h-6 px-2 text-xs flex-shrink-0"
+                            onClick={() => setLogoutTarget(a.account_id)}
+                          >
+                            退出
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
-            {status && !status.weixin_connected && (
-              <Button size="sm" onClick={handleStartLogin}>
-                扫码登录
-              </Button>
-            )}
-            {status?.weixin_connected && (
-              <AlertDialog>
-                <AlertDialogTrigger>
-                  <Button variant="ghost" size="sm" className="text-muted-foreground">
-                    退出绑定
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>退出微信绑定</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      确定要退出微信绑定吗？退出后需要重新扫码登录才能继续使用。
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>取消</AlertDialogCancel>
-                    <AlertDialogAction onClick={handleLogout} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-                      确认退出
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            )}
+            <Button size="sm" variant={status?.weixin_connected ? 'outline' : 'default'} onClick={handleStartLogin}>
+              {status?.weixin_connected ? '+ 添加微信账号' : '扫码登录'}
+            </Button>
           </div>
         </div>
       </header>
@@ -204,49 +265,136 @@ export default function App() {
       {/* 扫码登录 Dialog */}
       <Dialog open={loginDialogOpen} onOpenChange={handleLoginDialogChange}>
         <DialogContent className="sm:max-w-md">
+          {loginStatus === 'confirmed' && confirmedAccountId ? (
+            /* 绑定成功界面 */
+            <>
+              <DialogHeader>
+                <DialogTitle>🎉 绑定成功</DialogTitle>
+                <DialogDescription>
+                  微信账号已成功连接，可以为其设置一个备注以便识别
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="flex items-center gap-3 p-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800">
+                  <div className="w-10 h-10 rounded-full bg-green-100 dark:bg-green-900/40 flex items-center justify-center flex-shrink-0">
+                    <div className="w-3 h-3 rounded-full bg-green-500" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-green-700 dark:text-green-300">已连接</p>
+                    <p className="text-xs text-muted-foreground font-mono truncate">{confirmedAccountId}</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-4 items-center gap-3">
+                  <Label htmlFor="login-nickname" className="text-right text-sm">备注</Label>
+                  <Input
+                    id="login-nickname"
+                    value={loginNickname}
+                    onChange={e => setLoginNickname(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleLoginDone()}
+                    className="col-span-3"
+                    placeholder="例如：工作微信、小号（可选）"
+                    autoFocus
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => { setLoginDialogOpen(false); setConfirmedAccountId('') }}>跳过</Button>
+                <Button size="sm" onClick={handleLoginDone}>完成</Button>
+              </div>
+            </>
+          ) : (
+            /* 扫码界面 */
+            <>
+              <DialogHeader>
+                <DialogTitle>微信扫码登录</DialogTitle>
+                <DialogDescription>
+                  使用微信扫描下方二维码绑定账号
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex flex-col items-center gap-4 py-4">
+                {qrUrl ? (
+                  <div className="p-4 bg-white rounded-xl">
+                    <QRCodeSVG value={qrUrl} size={220} level="L" />
+                  </div>
+                ) : (
+                  <div className="w-[220px] h-[220px] bg-muted rounded-xl flex items-center justify-center">
+                    <span className="text-muted-foreground text-sm">加载中...</span>
+                  </div>
+                )}
+                <div className="flex items-center gap-2 text-sm">
+                  {loginStatus === 'wait' && (
+                    <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                  )}
+                  {loginStatus === 'scaned' && (
+                    <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
+                  )}
+                  {loginStatus === 'error' && (
+                    <div className="w-2 h-2 rounded-full bg-red-500" />
+                  )}
+                  <span className="text-muted-foreground">{loginMessage}</span>
+                </div>
+                {loginStatus === 'error' && (
+                  <Button variant="outline" size="sm" onClick={handleStartLogin}>
+                    重新获取二维码
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* 退出确认弹窗 */}
+      <AlertDialog open={!!logoutTarget} onOpenChange={open => { if (!open) setLogoutTarget('') }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认退出微信账号</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定要退出账号 <span className="font-medium text-foreground">{(() => { const a = accounts.find(x => x.account_id === logoutTarget); return a ? displayName(a) : logoutTarget; })()}</span> 吗？退出后需要重新扫码登录。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => handleLogoutAccount(logoutTarget)} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              确认退出
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 账号备注 Dialog */}
+      <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+        <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>微信扫码登录</DialogTitle>
+            <DialogTitle>设置账号备注</DialogTitle>
             <DialogDescription>
-              使用微信扫描下方二维码绑定账号
+              为账号 {renameTarget.length > 16 ? renameTarget.slice(0, 12) + '...' : renameTarget} 设置一个易识别的名称
             </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col items-center gap-4 py-4">
-            {qrUrl ? (
-              <div className="p-4 bg-white rounded-xl">
-                <QRCodeSVG value={qrUrl} size={220} level="L" />
-              </div>
-            ) : (
-              <div className="w-[220px] h-[220px] bg-muted rounded-xl flex items-center justify-center">
-                <span className="text-muted-foreground text-sm">加载中...</span>
-              </div>
-            )}
-            <div className="flex items-center gap-2 text-sm">
-              {loginStatus === 'wait' && (
-                <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-              )}
-              {loginStatus === 'scaned' && (
-                <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
-              )}
-              {loginStatus === 'confirmed' && (
-                <div className="w-2 h-2 rounded-full bg-green-500" />
-              )}
-              {loginStatus === 'error' && (
-                <div className="w-2 h-2 rounded-full bg-red-500" />
-              )}
-              <span className="text-muted-foreground">{loginMessage}</span>
+          <div className="grid gap-3 py-2">
+            <div className="grid grid-cols-4 items-center gap-3">
+              <Label htmlFor="account-nickname" className="text-right">备注</Label>
+              <Input
+                id="account-nickname"
+                value={renameValue}
+                onChange={e => setRenameValue(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleRenameSave()}
+                className="col-span-3"
+                placeholder="例如：工作微信、小号"
+                autoFocus
+              />
             </div>
-            {loginStatus === 'error' && (
-              <Button variant="outline" size="sm" onClick={handleStartLogin}>
-                重新获取二维码
-              </Button>
-            )}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => setRenameOpen(false)}>取消</Button>
+            <Button size="sm" onClick={handleRenameSave}>确认</Button>
           </div>
         </DialogContent>
       </Dialog>
 
       <main className="max-w-6xl mx-auto px-6 py-8">
         {/* 状态卡片 */}
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
           <Card>
             <CardHeader className="pb-2">
               <CardDescription>连接状态</CardDescription>
@@ -292,27 +440,86 @@ export default function App() {
               </div>
             </CardContent>
           </Card>
-
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>账号 ID</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <span className="text-sm font-mono text-muted-foreground truncate block">
-                {status?.account_id || '-'}
-              </span>
-            </CardContent>
-          </Card>
         </div>
 
         <Separator className="mb-8" />
 
+
         {/* 功能标签页 */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
           <TabsList>
+            <TabsTrigger value="accounts">微信账号</TabsTrigger>
             <TabsTrigger value="adapters">Agent 管理</TabsTrigger>
             <TabsTrigger value="routes">路由规则</TabsTrigger>
           </TabsList>
+
+          <TabsContent value="accounts">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold">微信账号管理</h3>
+                    <p className="text-sm text-muted-foreground mt-1">管理已连接的微信账号，支持同时登录多个账号</p>
+                  </div>
+                  <Button size="sm" onClick={handleStartLogin}>
+                    + 添加账号
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {accounts.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <p>尚未连接微信账号</p>
+                    <Button variant="outline" size="sm" className="mt-3" onClick={handleStartLogin}>
+                      扫码登录
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {accounts.map(a => (
+                      <div key={a.account_id} className="flex items-center justify-between p-3 rounded-lg border border-border hover:border-primary/30 transition-colors">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-9 h-9 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center flex-shrink-0">
+                            <div className="w-2.5 h-2.5 rounded-full bg-green-500" />
+                          </div>
+                          <div className="min-w-0">
+                            <span
+                              className="text-sm font-medium block truncate max-w-[240px] cursor-pointer hover:text-primary transition-colors"
+                              title="点击修改备注"
+                              onClick={() => handleRenameAccount(a.account_id, a.nickname)}
+                            >
+                              {displayName(a)}
+                            </span>
+                            <span className="text-xs text-muted-foreground font-mono truncate block max-w-[240px]">
+                              ID: {a.account_id}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => handleRenameAccount(a.account_id, a.nickname)}
+                          >
+                            备注
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive hover:text-destructive h-7 px-2 text-xs"
+                            onClick={() => setLogoutTarget(a.account_id)}
+                          >
+                            退出
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           <TabsContent value="adapters">
             <AdaptersPage onUpdate={loadStatus} />

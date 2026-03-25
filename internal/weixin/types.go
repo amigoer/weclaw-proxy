@@ -229,8 +229,9 @@ type QRStatusResponse struct {
 
 // AccountData 账号持久化数据
 type AccountData struct {
-	Token   string `json:"token,omitempty"`
-	SavedAt string `json:"saved_at,omitempty"`
-	BaseURL string `json:"base_url,omitempty"`
-	UserID  string `json:"user_id,omitempty"`
+	Token    string `json:"token,omitempty"`
+	SavedAt  string `json:"saved_at,omitempty"`
+	BaseURL  string `json:"base_url,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
+	Nickname string `json:"nickname,omitempty"`
 }
