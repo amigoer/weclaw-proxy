@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { fetchAdapters, createAdapter, updateAdapter, deleteAdapter } from '@/lib/api'
+import { fetchAdapters, createAdapter, updateAdapter, deleteAdapter, fetchModels } from '@/lib/api'
 
 // 适配器类型定义
 interface AdapterConfig {
@@ -42,6 +42,25 @@ const TYPE_COLORS: Record<string, 'default' | 'secondary' | 'outline'> = {
   cli: 'secondary',
 }
 
+// 预置常见模型列表
+const PRESET_MODELS = [
+  'gpt-4o',
+  'gpt-4o-mini',
+  'gpt-4.1',
+  'gpt-4.1-mini',
+  'gpt-4.1-nano',
+  'o3-mini',
+  'o4-mini',
+  'claude-sonnet-4-20250514',
+  'claude-3-7-sonnet-20250219',
+  'deepseek-chat',
+  'deepseek-reasoner',
+  'gemini-2.5-pro-preview-05-06',
+  'gemini-2.5-flash-preview-04-17',
+  'qwen-plus',
+  'qwen-turbo',
+]
+
 interface Props {
   onUpdate: () => void
 }
@@ -61,6 +80,8 @@ export function AdaptersPage({ onUpdate }: Props) {
     max_tokens: 4096,
     temperature: 0.7,
   })
+  const [modelOptions, setModelOptions] = useState<string[]>(PRESET_MODELS)
+  const [loadingModels, setLoadingModels] = useState(false)
 
   const loadAdapters = useCallback(async () => {
     try {
@@ -260,13 +281,39 @@ export function AdaptersPage({ onUpdate }: Props) {
                 <>
                   <div className="grid grid-cols-4 items-center gap-4">
                     <Label htmlFor="adapter-model" className="text-right">模型</Label>
-                    <Input
-                      id="adapter-model"
-                      value={form.model}
-                      onChange={e => setForm({ ...form, model: e.target.value })}
-                      className="col-span-3"
-                      placeholder="gpt-4o"
-                    />
+                    <div className="col-span-3 flex gap-2">
+                      <div className="relative flex-1">
+                        <Input
+                          id="adapter-model"
+                          value={form.model}
+                          onChange={e => setForm({ ...form, model: e.target.value })}
+                          placeholder="输入或选择模型"
+                          list="model-options"
+                        />
+                        <datalist id="model-options">
+                          {modelOptions.map(m => (
+                            <option key={m} value={m} />
+                          ))}
+                        </datalist>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0 text-xs px-3"
+                        disabled={loadingModels || !form.base_url}
+                        onClick={async () => {
+                          setLoadingModels(true)
+                          const models = await fetchModels(form.base_url || '', form.api_key || '')
+                          if (models.length > 0) {
+                            setModelOptions(models)
+                          }
+                          setLoadingModels(false)
+                        }}
+                      >
+                        {loadingModels ? '加载中...' : '获取模型'}
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-4 items-start gap-4">

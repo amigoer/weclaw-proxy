@@ -12,6 +12,22 @@ export async function fetchAdapters() {
   return res.json()
 }
 
+// 查询远端可用模型列表
+export async function fetchModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  const params = new URLSearchParams({ base_url: baseUrl })
+  if (apiKey && !apiKey.includes('****')) {
+    params.set('api_key', apiKey)
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/adapters/models?${params}`)
+    if (!res.ok) return []
+    const data = await res.json()
+    return data.models || []
+  } catch {
+    return []
+  }
+}
+
 export async function createAdapter(data: Record<string, unknown>) {
   const res = await fetch(`${API_BASE}/api/adapters`, {
     method: 'POST',
