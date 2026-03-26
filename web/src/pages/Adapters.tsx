@@ -271,14 +271,24 @@ export function AdaptersPage({ onUpdate }: Props) {
 
                   <div className="grid grid-cols-4 items-start gap-4">
                     <Label htmlFor="adapter-prompt" className="text-right pt-3">系统提示</Label>
-                    <Textarea
-                      id="adapter-prompt"
-                      value={form.system_prompt}
-                      onChange={e => setForm({ ...form, system_prompt: e.target.value })}
-                      className="col-span-3"
-                      rows={3}
-                      placeholder="你是一个友好的微信助手..."
-                    />
+                    <div className="col-span-3 space-y-2">
+                      <Textarea
+                        id="adapter-prompt"
+                        value={form.system_prompt}
+                        onChange={e => setForm({ ...form, system_prompt: e.target.value })}
+                        rows={3}
+                        placeholder="你是一个友好的微信助手..."
+                      />
+                      <p className="text-muted-foreground text-xs leading-relaxed">
+                        支持变量：
+                        <code className="mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{'{cur_date}'}</code>
+                        <code className="mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{'{cur_time}'}</code>
+                        <code className="mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{'{cur_datetime}'}</code>
+                        <code className="mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{'{model_id}'}</code>
+                        <code className="mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{'{model_name}'}</code>
+                        <code className="mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{'{locale}'}</code>
+                      </p>
+                    </div>
                   </div>
                 </>
               )}

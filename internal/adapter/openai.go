@@ -111,11 +111,11 @@ func (a *OpenAIAdapter) Type() string { return "openai" }
 func (a *OpenAIAdapter) buildMessages(req *ChatRequest) []openAIMessage {
 	var messages []openAIMessage
 
-	// 系统提示词
+	// 系统提示词（支持模板变量替换）
 	if a.systemPrompt != "" {
 		messages = append(messages, openAIMessage{
 			Role:    "system",
-			Content: a.systemPrompt,
+			Content: ExpandPromptVars(a.systemPrompt, a.model),
 		})
 	}
 
