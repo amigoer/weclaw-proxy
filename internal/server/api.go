@@ -5,11 +5,13 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/amigoer/weclaw-proxy/internal/adapter"
 	"github.com/amigoer/weclaw-proxy/internal/router"
@@ -121,6 +123,7 @@ func (s *Server) registerRoutes() {
 	// API 路由
 	s.mux.HandleFunc("/api/status", s.cors(s.handleStatus))
 	s.mux.HandleFunc("/api/adapters", s.cors(s.handleAdapters))
+	s.mux.HandleFunc("/api/adapters/models", s.cors(s.handleModels))
 	s.mux.HandleFunc("/api/adapters/", s.cors(s.handleAdapterByName))
 	s.mux.HandleFunc("/api/routes", s.cors(s.handleRoutes))
 	s.mux.HandleFunc("/api/smart-routing", s.cors(s.handleSmartRouting))
@@ -631,4 +634,80 @@ func (s *Server) ListenAndServe(addr string) error {
 	}
 	fmt.Printf("🌐 管理面板: http://%s\n", displayAddr)
 	return http.ListenAndServe(addr, s.mux)
+}
+
+// handleModels 代理查询远端模型列表
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	baseURL := r.URL.Query().Get("base_url")
+	apiKey := r.URL.Query().Get("api_key")
+
+	if baseURL == "" {
+		s.jsonErr(w, "缺少 base_url 参数", http.StatusBadRequest)
+		return
+	}
+
+	baseURL = strings.TrimRight(baseURL, "/")
+
+	// 构建远端请求 URL
+	modelsURL := baseURL + "/models"
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
+	if err != nil {
+		s.jsonErr(w, "创建请求失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		s.jsonErr(w, "请求模型列表失败: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		s.jsonErr(w, "读取响应失败: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		s.jsonErr(w, fmt.Sprintf("远端返回 HTTP %d", resp.StatusCode), resp.StatusCode)
+		return
+	}
+
+	// 解析 OpenAI 格式的模型列表
+	var modelsResp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &modelsResp); err != nil {
+		// 非 OpenAI 标准格式，尝试返回原始响应
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(body)
+		return
+	}
+
+	// 提取模型 ID 列表
+	models := make([]string, 0, len(modelsResp.Data))
+	for _, m := range modelsResp.Data {
+		if m.ID != "" {
+			models = append(models, m.ID)
+		}
+	}
+
+	s.json(w, map[string]interface{}{"models": models})
 }
