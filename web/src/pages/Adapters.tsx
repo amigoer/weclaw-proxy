@@ -63,6 +63,26 @@ const PRESET_MODELS = [
   'qwen-turbo',
 ]
 
+// 模板变量定义
+const TEMPLATE_VARS = [
+  { name: '{cur_date}', desc: '当前日期' },
+  { name: '{cur_time}', desc: '当前时间' },
+  { name: '{cur_datetime}', desc: '日期时间' },
+  { name: '{model_id}', desc: '模型 ID' },
+  { name: '{model_name}', desc: '模型名称' },
+  { name: '{locale}', desc: '语言环境' },
+]
+
+// 常用 Prompt 片段
+const PROMPT_SNIPPETS = [
+  { label: '📱 微信助手', text: '你是一个友好的微信智能助手。请用简洁的中文回复，避免使用 Markdown 格式。' },
+  { label: '🕐 时间感知', text: '当前时间：{cur_datetime}。请在需要时参考当前时间信息。' },
+  { label: '🎭 角色扮演', text: '你是一个专业的[领域]顾问。请基于你的专业知识，为用户提供准确、实用的建议。' },
+  { label: '✂️ 简洁回复', text: '请用简洁明了的语言回复，每次回复控制在 200 字以内。不要使用 Markdown 格式。' },
+  { label: '💬 多轮上下文', text: '请记住之前的对话内容，保持上下文连贯性。如果用户的问题不清楚，请主动追问。' },
+  { label: '🛡️ 安全边界', text: '如果用户的请求涉及违法、有害或不当内容，请礼貌拒绝并说明原因。' },
+]
+
 interface Props {
   onUpdate: () => void
 }
@@ -84,6 +104,35 @@ export function AdaptersPage({ onUpdate }: Props) {
   })
   const [modelOptions, setModelOptions] = useState<string[]>(PRESET_MODELS)
   const [loadingModels, setLoadingModels] = useState(false)
+
+  // 在 Textarea 光标位置插入文本
+  const insertAtCursor = (textareaId: string, text: string) => {
+    const el = document.getElementById(textareaId) as HTMLTextAreaElement
+    if (!el) return
+    const start = el.selectionStart
+    const end = el.selectionEnd
+    const value = form.system_prompt || ''
+    const newValue = value.slice(0, start) + text + value.slice(end)
+    setForm({ ...form, system_prompt: newValue })
+    requestAnimationFrame(() => {
+      el.focus()
+      el.setSelectionRange(start + text.length, start + text.length)
+    })
+  }
+
+  // 追加 prompt 片段到末尾
+  const appendSnippet = (textareaId: string, text: string) => {
+    const current = form.system_prompt || ''
+    const newValue = current ? current.trimEnd() + '\n' + text : text
+    setForm({ ...form, system_prompt: newValue })
+    requestAnimationFrame(() => {
+      const el = document.getElementById(textareaId) as HTMLTextAreaElement
+      if (el) {
+        el.focus()
+        el.setSelectionRange(newValue.length, newValue.length)
+      }
+    })
+  }
 
   const loadAdapters = useCallback(async () => {
     try {
@@ -328,15 +377,38 @@ export function AdaptersPage({ onUpdate }: Props) {
                         rows={3}
                         placeholder="你是一个友好的微信助手..."
                       />
-                      <p className="text-muted-foreground text-xs leading-relaxed">
-                        支持变量：
-                        <code className="mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{'{cur_date}'}</code>
-                        <code className="mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{'{cur_time}'}</code>
-                        <code className="mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{'{cur_datetime}'}</code>
-                        <code className="mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{'{model_id}'}</code>
-                        <code className="mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{'{model_name}'}</code>
-                        <code className="mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{'{locale}'}</code>
-                      </p>
+                      <div className="flex flex-wrap gap-1">
+                        <span className="text-muted-foreground text-xs leading-6">插入变量：</span>
+                        {TEMPLATE_VARS.map(v => (
+                          <button
+                            key={v.name}
+                            type="button"
+                            title={v.desc}
+                            className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground hover:bg-primary/10 hover:text-primary cursor-pointer transition-colors"
+                            onClick={() => insertAtCursor('adapter-prompt', v.name)}
+                          >
+                            {v.name}
+                          </button>
+                        ))}
+                      </div>
+                      <details className="group">
+                        <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors select-none">
+                          常用 Prompt 片段
+                        </summary>
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {PROMPT_SNIPPETS.map(s => (
+                            <button
+                              key={s.label}
+                              type="button"
+                              title={s.text}
+                              className="inline-flex items-center rounded-md border border-border bg-background px-2 py-1 text-xs hover:bg-primary/10 hover:border-primary/30 hover:text-primary cursor-pointer transition-colors"
+                              onClick={() => appendSnippet('adapter-prompt', s.text)}
+                            >
+                              {s.label}
+                            </button>
+                          ))}
+                        </div>
+                      </details>
                     </div>
                   </div>
                 </>
@@ -357,14 +429,47 @@ export function AdaptersPage({ onUpdate }: Props) {
 
                   <div className="grid grid-cols-4 items-start gap-4">
                     <Label htmlFor="gemini-prompt" className="text-right pt-3">系统提示</Label>
-                    <Textarea
-                      id="gemini-prompt"
-                      value={form.system_prompt}
-                      onChange={e => setForm({ ...form, system_prompt: e.target.value })}
-                      className="col-span-3"
-                      rows={3}
-                      placeholder="你是一个友好的微信助手..."
-                    />
+                    <div className="col-span-3 space-y-2">
+                      <Textarea
+                        id="gemini-prompt"
+                        value={form.system_prompt}
+                        onChange={e => setForm({ ...form, system_prompt: e.target.value })}
+                        rows={3}
+                        placeholder="你是一个友好的微信助手..."
+                      />
+                      <div className="flex flex-wrap gap-1">
+                        <span className="text-muted-foreground text-xs leading-6">插入变量：</span>
+                        {TEMPLATE_VARS.map(v => (
+                          <button
+                            key={v.name}
+                            type="button"
+                            title={v.desc}
+                            className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground hover:bg-primary/10 hover:text-primary cursor-pointer transition-colors"
+                            onClick={() => insertAtCursor('gemini-prompt', v.name)}
+                          >
+                            {v.name}
+                          </button>
+                        ))}
+                      </div>
+                      <details className="group">
+                        <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors select-none">
+                          常用 Prompt 片段
+                        </summary>
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {PROMPT_SNIPPETS.map(s => (
+                            <button
+                              key={s.label}
+                              type="button"
+                              title={s.text}
+                              className="inline-flex items-center rounded-md border border-border bg-background px-2 py-1 text-xs hover:bg-primary/10 hover:border-primary/30 hover:text-primary cursor-pointer transition-colors"
+                              onClick={() => appendSnippet('gemini-prompt', s.text)}
+                            >
+                              {s.label}
+                            </button>
+                          ))}
+                        </div>
+                      </details>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-4 items-center gap-4">
